@@ -1,0 +1,6 @@
+__pycache__/
+.vscode/
+ca-certs/
+certs/
+venv/
+.env
