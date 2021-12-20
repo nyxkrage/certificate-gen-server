@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from datetime import datetime, timedelta
+from sys import argv
 from cryptography.x509.base import random_serial_number
 from flask import Flask, request, send_file
 from os import getenv
@@ -11,12 +12,8 @@ from OpenSSL import crypto, SSL
 load_dotenv()
 
 CERTS_LOCATION = getenv("CERTS_LOCATION")
-CA_CERT = crypto.load_certificate(
-    crypto.FILETYPE_PEM, open(getenv("CA_CERT"), "rt").read()
-)
-CA_KEY = crypto.load_privatekey(
-    crypto.FILETYPE_PEM, open(getenv("CA_KEY"), "rt").read()
-)
+
+CA_CN=getenv("CA_CN")
 CA_COUNTRY = getenv("CA_COUNTRY")
 CA_STATE = getenv("CA_STATE")
 CA_CITY = getenv("CA_CITY")
@@ -26,10 +23,49 @@ CA_EMAIL = getenv("CA_EMAIL")
 
 app = Flask(__name__)
 
+def gen_ca_cert(key):
+    utcnow = datetime.utcnow()
+    now = str.encode(utcnow.strftime("%Y%m%d%H%M%SZ"))
+    expire = str.encode((utcnow + timedelta(days=365)).strftime("%Y%m%d%H%M%SZ"))
+
+    crt = crypto.X509()
+    crt.set_version(2)
+    crt.set_serial_number(random_serial_number())
+    crt.set_notBefore(now)
+    crt.set_notAfter(expire)
+
+    subject = crt.get_subject()
+    subject.commonName = CA_CN
+    subject.countryName = CA_COUNTRY
+    subject.emailAddress = CA_EMAIL
+    subject.stateOrProvinceName = CA_STATE
+    subject.localityName = CA_CITY
+    subject.organizationName = CA_ORG
+
+    crt.add_extensions([
+        crypto.X509Extension(b"subjectKeyIdentifier", False, b"hash", subject=crt),
+    ])
+
+    crt.add_extensions([
+        crypto.X509Extension(b"authorityKeyIdentifier", False, b"keyid:always", issuer=crt),
+    ])
+
+    crt.add_extensions([
+        crypto.X509Extension(b"basicConstraints", False, b"CA:TRUE"),
+        crypto.X509Extension(b"keyUsage", False, b"keyCertSign, cRLSign"),
+    ])
+
+    crt.set_issuer(subject)
+    crt.set_pubkey(key)
+    crt.sign(key, 'sha256')
+
+    return crt
+
 
 def gen_private_key():
     key = crypto.PKey()
     key.generate_key(crypto.TYPE_RSA, 4096)
+    
     return key
 
 
@@ -135,6 +171,39 @@ def get_key(domain, tld):
         return "Key not found"
     path = path / f"{domain}.{tld}.key"
     return send_file(path, mimetype="text/plain")
+    
+def run():
+    app.run(host="127.0.0.1", port=5000)
 
+def gen():
+    CA_CERT=getenv("CA_CERT")
+    CA_KEY=getenv("CA_KEY")
 
-app.run(host="127.0.0.1", port=5000)
+    key = gen_private_key()
+    crt = gen_ca_cert(key)
+
+    key_path = Path(CA_KEY)
+    crt_path = Path(CA_CERT)
+    
+    crt_path.parent.mkdir(exist_ok=True, parents=True)
+    crt_path.parent.mkdir(exist_ok=True, parents=True)
+    
+    key_path.write_bytes(
+        crypto.dump_privatekey(crypto.FILETYPE_PEM, key)
+    )
+    crt_path.write_bytes(
+        crypto.dump_certificate(crypto.FILETYPE_PEM, crt)
+    )
+
+if argv[1] == "gen":
+    gen()
+    exit(0)
+
+CA_CERT = crypto.load_certificate(
+    crypto.FILETYPE_PEM, open(getenv("CA_CERT"), "rt").read()
+)
+CA_KEY = crypto.load_privatekey(
+    crypto.FILETYPE_PEM, open(getenv("CA_KEY"), "rt").read()
+)
+
+run()
